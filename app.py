@@ -144,6 +144,9 @@ if check_password():
         st.session_state.ai_response = None
     if 'conversation_history' not in st.session_state:
         st.session_state.conversation_history = []
+    if 'problem_solving_instructions' not in st.session_state:
+        st.session_state.problem_solving_instructions = {}
+
 
     # 学習段階に応じた設定
     learning_stages = [ "中学1年生", "中学2年生", "中学3年生"]
