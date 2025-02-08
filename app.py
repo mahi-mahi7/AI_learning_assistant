@@ -12,7 +12,7 @@ import os
 #     key_file.write(key)
 
 # 鍵の読み込み
-fernet_key = st.secrets["FERNET_KEY"]
+fernet_key = "YKjHFbJ6i60ThzUXLH_NUtueLb-YR6fW2d1WcmPg1II="
 if fernet_key:
     fernet = Fernet(fernet_key.encode())
 else:
@@ -163,7 +163,10 @@ if check_password():
         messages = [
             {"role": "system", "content": st.session_state.global_instruction}
         ]
-
+        # problem_generation_instructionsを初期化
+        if 'problem_generation_instructions' not in st.session_state:
+            st.session_state.problem_generation_instructions = {}
+        
         if function == "問題解決" and username in st.session_state.problem_solving_instructions:
             messages.append({"role": "system", "content": st.session_state.problem_solving_instructions[username]})
         elif function == "問題出題" and username in st.session_state.problem_generation_instructions:
@@ -176,6 +179,7 @@ if check_password():
             messages=messages
         )
         return response.choices[0].message.content
+
 
 
 
