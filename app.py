@@ -175,7 +175,7 @@ if check_password():
         messages.append({"role": "user", "content": prompt})
 
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4",
             messages=messages
         )
         return response.choices[0].message.content
