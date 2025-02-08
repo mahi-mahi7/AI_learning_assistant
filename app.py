@@ -12,7 +12,7 @@ import os
 #     key_file.write(key)
 
 # 鍵の読み込み
-fernet_key = os.environ.get('FERNET_KEY')
+fernet_key = st.secrets["FERNET_KEY"]
 if fernet_key:
     fernet = Fernet(fernet_key.encode())
 else:
@@ -68,6 +68,32 @@ if check_password():
     c.execute('''CREATE TABLE IF NOT EXISTS learning_history
                  (username TEXT, unit TEXT, count INTEGER)''')
 
+    # ユーザープロンプトを保存するテーブル(new 2/8 10:04)
+    c.execute('''CREATE TABLE IF NOT EXISTS user_prompts
+                (username TEXT, function TEXT, prompt TEXT, PRIMARY KEY (username, function))''')
+
+    # user_promptsテーブルにfunctionカラムが存在するか確認し、存在しない場合は追加
+    c.execute('''PRAGMA table_info(user_prompts)''')
+    columns = [column[1] for column in c.fetchall()]
+    if 'function' not in columns:
+        c.execute('''ALTER TABLE user_prompts ADD COLUMN function TEXT''')
+    conn.commit()
+
+
+
+    
+    #セッション分析保存テーブル（new 2/8 8:27）
+    c.execute('''CREATE TABLE IF NOT EXISTS sessions
+                 (username TEXT, function TEXT, session TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS problems
+                 (username TEXT, function TEXT, problem TEXT, user_answer TEXT, ai_feedback TEXT, user_question TEXT, ai_response TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS evaluations
+                 (username TEXT, date TEXT, evaluation TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS learning_history
+                 (username TEXT, unit TEXT, count INTEGER)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS session_analyses
+                 (username TEXT, function TEXT, session_id INTEGER, analysis TEXT)''')
+
     # 既存のテーブルに新しいカラムを追加
     c.execute('''PRAGMA table_info(problems)''')
     columns = [column[1] for column in c.fetchall()]
@@ -83,7 +109,6 @@ if check_password():
     conn.commit()
 
 
-    # ... (その他のコードは変更なし)
 # セッション状態の初期化
     if 'messages' not in st.session_state:
         st.session_state.messages = []
@@ -121,36 +146,43 @@ if check_password():
         st.session_state.conversation_history = []
 
     # 学習段階に応じた設定
-    learning_stages = ["小学1年生", "小学2年生", "小学3年生", "小学4年生", "小学5年生", "小学6年生", "中学1年生", "中学2年生", "中学3年生"]
+    learning_stages = [ "中学1年生", "中学2年生", "中学3年生"]
 
     # 単元リスト
     units = {
-        "小学1年生": ["たし算", "ひき算", "かたち"],
-        "小学2年生": ["かけ算", "長さ", "時間"],
-        "小学3年生": ["わり算", "小数", "分数"],
-        "小学4年生": ["小数", "面積", "角度"],
-        "小学5年生": ["分数", "体積", "平均"],
-        "小学6年生": ["比", "速さ", "拡大図と縮図"],
         "中学1年生": ["正負の数", "文字と式",  "方程式", "比例と反比例", "平面図形", "空間図形", "資料の分析と活用"],
         "中学2年生": ["式の計算", "連立方程式", "一次関数", "平行と合同", "三角形と四角形", "場合の数と確率"],
         "中学3年生": ["多項式", "平方根", "二次方程式", "関数y=ax^2", "相似な図形", "円", "三平方の定理", "標本調査"],
     }
 
-    def generate_response(prompt):
+
+    def generate_response(prompt, username="", function=""):
+        messages = [
+            {"role": "system", "content": st.session_state.global_instruction}
+        ]
+
+        if function == "問題解決" and username in st.session_state.problem_solving_instructions:
+            messages.append({"role": "system", "content": st.session_state.problem_solving_instructions[username]})
+        elif function == "問題出題" and username in st.session_state.problem_generation_instructions:
+            messages.append({"role": "system", "content": st.session_state.problem_generation_instructions[username]})
+
+        messages.append({"role": "user", "content": prompt})
+
         response = client.chat.completions.create(
-            model="gpt-4-0613",
-            messages=[
-                {"role": "system", "content": f"あなたは{st.session_state.learning_stage}向けの算数・数学の先生です。必ず{st.session_state.learning_stage}が十分理解できる漢字や語彙のみを使用することを順守し、具体例を交えてわかりやすく説明してください。文末の表現はすべて「です、ます」口調に統一してください。"},
-                {"role": "user", "content": prompt}
-            ]
+            model="gpt-3.5-turbo",
+            messages=messages
         )
         return response.choices[0].message.content
 
+
+
+
     def generate_problem(unit, additional_conditions=""):
-        prompt = f"{st.session_state.learning_stage}に向けて適切とされる{unit}に関する問題を1つ作成してください。またその際、解答は生成しないでください。ユーザーに指定されない限り、文章題や小数（特に無限小数）が答えになるような問題は生成せず、比較的単純な計算問題を生成するようにしてください。"
+        prompt = f"{st.session_state.learning_stage}に向けて適切とされる{unit}に関する問題を1つ作成してください。その際、解答は生成しないでください。また、できる限り解が整数となる問題を生成するようにしてください。"
         if additional_conditions:
             prompt += f" 追加条件: {additional_conditions}"
-        return generate_response(prompt)
+        return generate_response(prompt, username=st.session_state.username, function="問題出題")
+
 
     def evaluate_answer(problem, user_answer):
         prompt = f"問題: {problem}\n学習者の回答: {user_answer}\nこの回答に対して確実な正誤判定を行い、正解であれば「正解です!」と表示した後に解説を行い、不正解であれば「不正解です」と表示した後に解法のヒントを提供してください。また学習者の回答欄が空白の場合は無回答であるため不正解としてください。文末の表現はすべて「です、ます」口調に統一してください。"
@@ -158,7 +190,7 @@ if check_password():
 
     def analyze_learning_history():
         history_summary = ", ".join([f"{unit}: {count}回" for unit, count in st.session_state.learning_history.items()])
-        prompt = f"学習履歴: {history_summary}\nこの学習履歴に基づいて、単元ごとに学習者の特に優れている具体的な点、学習者がつまづいている具体的な点、つまづきを克服するための具体的なアドバイスの3つの観点をそれぞれ行を変更して1～2文で説明・提案してください。文末の表現はすべて「です、ます」口調に統一するようにしてください。"
+        prompt = f"学習履歴: {history_summary}\nこの学習履歴に基づいて、単元ごとに学習者の特に優れていることや以前に比べてできるようになったことがあればその具体的な点、学習者がつまづいている具体的な点、つまづきを克服するための具体的なアドバイスの3つの観点を明確な根拠と共にそれぞれ行を変更して1～2文で説明・提案してください。文末の表現はすべて「です、ます」口調に統一するようにしてください。"
         return generate_response(prompt)
 
     def display_message(message, is_user=False):
@@ -173,7 +205,7 @@ if check_password():
         password = st.text_input("パスワード", type="password")
         user_type = st.selectbox("ユーザータイプ", ["学習者", "教師"])
         if st.button("ログイン"):
-            c.execute("SELECT * FROM users WHERE username=? AND user_type=?", (encrypt_data(username), user_type))
+            c.execute("SELECT * FROM users WHERE username=? AND user_type=?", (username, user_type))
             user = c.fetchone()
             if user and decrypt_data(user[1]) == password:
                 st.session_state.logged_in = True
@@ -191,20 +223,29 @@ if check_password():
         new_user_type = st.selectbox("ユーザータイプ", ["学習者", "教師"])
         if st.button("登録"):
             try:
-                c.execute("SELECT * FROM users WHERE username = ?", (encrypt_data(new_username),))
+                c.execute("SELECT * FROM users WHERE username = ?", (new_username,))
                 if c.fetchone():
                     st.error("このユーザー名は既に使用されています。別のユーザー名を選択してください。")
                 else:
                     c.execute("INSERT INTO users (username, password, user_type) VALUES (?, ?, ?)", 
-                              (encrypt_data(new_username), encrypt_data(new_password), new_user_type))
+                            (new_username, encrypt_data(new_password), new_user_type))
                     conn.commit()
                     st.success("登録が完了しました。ログインしてください。")
             except sqlite3.IntegrityError:
                 st.error("登録中にエラーが発生しました。もう一度お試しください。")
 
 
-    # ... (その他のコードは変更なし)
     def main():
+        #試作（2/7 13:13）
+        if 'global_instruction' not in st.session_state:
+            st.session_state.global_instruction = """ あなたは中学生3年生向けの学習支援AIアシスタントです。
+ 以下の点に注意して応答してください：
+1. 中学生3年生が理解できる言葉遣い、漢字、語彙を用いて説明する
+2. 300字以内で回答を行う
+3. 質問の意図を正確に理解し、的確に回答する
+4. 文末の表現はすべて「です、ます」口調で統一する
+5.  """
+        
         st.title("AI学習支援ツール")
         if not st.session_state.logged_in:
             action = st.radio("アクションを選択してください", ["ログイン", "新規登録"])
@@ -224,22 +265,30 @@ if check_password():
                 st.session_state.user_type = ""
                 st.rerun()
 
+
     def student_view():
         st.session_state.learning_stage = st.sidebar.selectbox("学習段階を選択してください", learning_stages, index=learning_stages.index("中学3年生"))
 
-        st.session_state.current_function = st.sidebar.selectbox("機能を選択してください", ["問題解決", "問題出題", "適応型問題出題", "学習評価"])
+        st.session_state.current_function = st.sidebar.selectbox("機能を選択してください", ["問題解決", "問題出題", "学習者に応じた問題出題", "学習評価"])
 
         if st.session_state.current_function == "問題解決":
-            problem_solving()
+            problem_solving(username=st.session_state.username)
+
         elif st.session_state.current_function == "問題出題":
             problem_generation()
-        elif st.session_state.current_function == "適応型問題出題":
+        elif st.session_state.current_function == "学習者に応じた問題出題":
             optimal_problem_generation()
         elif st.session_state.current_function == "学習評価":
             learning_evaluation()
 
+    # 教師用ダッシュボード
     def teacher_view():
         st.subheader("教師用ダッシュボード")
+
+        # 全機能共通のインストラクション設定
+        st.session_state.global_instruction = st.text_area("全機能共通のインストラクションを設定", st.session_state.global_instruction, height=200)
+        if st.button("全機能共通のインストラクションを更新"):
+            st.success("全機能共通のインストラクションが更新されました。")
 
         # ユーザー選択
         c.execute("SELECT username FROM users WHERE user_type='学習者'")
@@ -247,8 +296,69 @@ if check_password():
         selected_user = st.selectbox("ユーザーを選択", users)
 
         # 機能選択
-        functions = ["問題解決", "問題出題", "適応型問題出題", "学習評価"]
+        functions = ["問題解決", "問題出題", "学習者に応じた問題出題", "学習評価"]
         selected_function = st.selectbox("機能を選択", functions)
+
+        # 学習者ごとのプロンプト設定
+        if selected_function == "問題解決":
+            if 'problem_solving_instructions' not in st.session_state:
+                st.session_state.problem_solving_instructions = {}
+
+            if selected_user not in st.session_state.problem_solving_instructions:
+                # データベースからプロンプトを読み込む
+                c.execute("SELECT prompt FROM user_prompts WHERE username=? AND function=?", (selected_user, "問題解決"))
+                result = c.fetchone()
+                if result:
+                    st.session_state.problem_solving_instructions[selected_user] = result[0]
+                else:
+                    st.session_state.problem_solving_instructions[selected_user] = ""
+
+            st.session_state.problem_solving_instructions[selected_user] = st.text_area(
+                f"{selected_user}の問題解決プロンプトを設定",
+                st.session_state.problem_solving_instructions[selected_user],
+                height=100
+            )
+
+            if st.button(f"{selected_user}の問題解決プロンプトを更新"):
+                # データベースにプロンプトを保存
+                try:
+                    c.execute("INSERT OR REPLACE INTO user_prompts (username, function, prompt) VALUES (?, ?, ?)",
+                                (selected_user, "問題解決", st.session_state.problem_solving_instructions[selected_user]))
+                    conn.commit()
+                    st.success(f"{selected_user}の問題解決プロンプトが更新されました。")
+                except Exception as e:
+                    st.error(f"プロンプトの保存中にエラーが発生しました: {e}")
+        
+        elif selected_function == "問題出題":
+            if 'problem_generation_instructions' not in st.session_state:
+                st.session_state.problem_generation_instructions = {}
+
+            if selected_user not in st.session_state.problem_generation_instructions:
+                # データベースからプロンプトを読み込む
+                c.execute("SELECT prompt FROM user_prompts WHERE username=? AND function=?", (selected_user, "問題出題"))
+                result = c.fetchone()
+                if result:
+                    st.session_state.problem_generation_instructions[selected_user] = result[0]
+                else:
+                    st.session_state.problem_generation_instructions[selected_user] = ""
+
+            st.session_state.problem_generation_instructions[selected_user] = st.text_area(
+                f"{selected_user}の問題出題プロンプトを設定",
+                st.session_state.problem_generation_instructions[selected_user],
+                height=100
+            )
+
+            if st.button(f"{selected_user}の問題出題プロンプトを更新"):
+                # データベースにプロンプトを保存
+                try:
+                    c.execute("INSERT OR REPLACE INTO user_prompts (username, function, prompt) VALUES (?, ?, ?)",
+                                (selected_user, "問題出題", st.session_state.problem_generation_instructions[selected_user]))
+                    conn.commit()
+                    st.success(f"{selected_user}の問題出題プロンプトが更新されました。")
+                except Exception as e:
+                    st.error(f"プロンプトの保存中にエラーが発生しました: {e}")
+
+
 
         # ユーザーの活動を表示
         if selected_function == "問題解決":
@@ -264,8 +374,9 @@ if check_password():
                             display_message(message['content'], message['role'] == 'user')
             else:
                 st.write("このユーザーの問題解決セッションはまだありません。")
+
         
-        elif selected_function in ["問題出題", "適応型問題出題"]:
+        elif selected_function in ["問題出題", "学習者に応じた問題出題"]:
             st.subheader(selected_function)
             c.execute("SELECT problem, COALESCE(user_answer, 'No answer yet') as user_answer, COALESCE(ai_feedback, 'No feedback yet') as ai_feedback, COALESCE(user_question, 'No question yet') as user_question, COALESCE(ai_response, 'No response yet') as ai_response FROM problems WHERE username=? AND function=?", (selected_user, selected_function))
             problems = c.fetchall()
@@ -292,7 +403,46 @@ if check_password():
             else:
                 st.write("このユーザーの学習評価履歴はまだありません。")
 
-    def problem_solving():
+
+        # セッション分析の表示
+        st.subheader(f"{selected_function}セッション分析")
+
+        # データベースからセッション分析を読み込む
+        session_analyses = {}
+        c.execute("SELECT session_id, analysis FROM session_analyses WHERE username=? AND function=?", (selected_user, selected_function))
+        analysis_results = c.fetchall()
+        for session_id, analysis in analysis_results:
+            session_analyses[session_id] = analysis
+
+        if selected_function == "問題解決":
+            c.execute("SELECT rowid, session FROM sessions WHERE username=? AND function=?", (selected_user, selected_function))
+            sessions = c.fetchall()
+        else:
+            c.execute("SELECT rowid, problem, user_answer, ai_feedback, user_question, ai_response FROM problems WHERE username=? AND function=?", (selected_user, selected_function))
+            sessions = c.fetchall()
+
+        if sessions:
+            for i, session in enumerate(sessions):
+                session_id = session[0]  # rowidを使用
+                if session_id not in session_analyses:
+                    with st.spinner(f"セッション {i+1} の分析中..."):
+                        session_data = json.dumps(session[1:])  # rowidを除いたデータをJSONに
+                        analysis_prompt = f"以下のセッションデータを分析し、1.学習者の理解状況、2.つまづいているポイントとその要因を根拠と共に簡潔に要約してください:\n{session_data}"
+                        analysis = generate_response(analysis_prompt, username=selected_user)
+                        session_analyses[session_id] = analysis
+
+                        # データベースにセッション分析を保存
+                        c.execute("INSERT INTO session_analyses (username, function, session_id, analysis) VALUES (?, ?, ?, ?)",
+                                  (selected_user, selected_function, session_id, analysis))
+                        conn.commit()
+
+                with st.expander(f"セッション {i+1} 分析"):
+                    st.write(session_analyses[session_id])
+        else:
+            st.write(f"このユーザーの{selected_function}セッションはまだありません。")
+
+
+    def problem_solving(username=""):
         st.subheader("問題解決")
         
         st.sidebar.subheader("セッション履歴")
@@ -316,7 +466,7 @@ if check_password():
             st.session_state.current_session.append({"role": "user", "content": user_input})
             display_message(user_input, is_user=True)
 
-            response = generate_response(user_input)
+            response = generate_response(user_input, st.session_state.username, "問題解決")
             st.session_state.current_session.append({"role": "assistant", "content": response})
             display_message(response)
 
@@ -352,11 +502,14 @@ if check_password():
             if st.button("回答を送信"):
                 ai_feedback = evaluate_answer(st.session_state.current_problem, user_answer)
                 st.session_state.conversation_history.append(("AI", ai_feedback))
-                
+    
                 c.execute("INSERT INTO problems (username, function, problem, user_answer, ai_feedback) VALUES (?, ?, ?, ?, ?)",
-                          (encrypt_data(st.session_state.username), st.session_state.current_function, 
-                           encrypt_data(st.session_state.current_problem), encrypt_data(user_answer), encrypt_data(ai_feedback)))
+                           (st.session_state.username, "問題出題", 
+                            st.session_state.current_problem, user_answer, ai_feedback))
                 conn.commit()
+
+            
+            
                 
                 if st.session_state.current_problem.split()[0] in st.session_state.learning_history:
                     st.session_state.learning_history[st.session_state.current_problem.split()[0]] += 1
@@ -374,7 +527,6 @@ if check_password():
                 display_message(content, role == "User")
 
 
-    # ... (その他のコードは変更なし)
             if st.session_state.conversation_history:
                 user_question = st.text_input("AIの解説に対する質問があれば入力してください")
                 
@@ -395,14 +547,14 @@ if check_password():
                 st.rerun()
 
     def optimal_problem_generation():
-        st.subheader("適応型問題出題")
+        st.subheader("学習者に応じた問題出題")
         
         if not st.session_state.learning_history:
             st.write("まだ学習履歴がありません。問題出題機能を使って問題を解いてみましょう。")
             return
         
         if not st.session_state.weak_problem_generated:
-            if st.button("弱点に基づいた問題を生成"):
+            if st.button("学習者に応じた問題を生成"):
                 weak_units = [unit for unit, count in st.session_state.learning_history.items() if count < 3]
                 if weak_units:
                     selected_unit = min(st.session_state.learning_history, key=st.session_state.learning_history.get)
@@ -454,15 +606,29 @@ if check_password():
     def learning_evaluation():
         st.subheader("学習評価")
         
-        if st.button("学習履歴を分析"):
+        if st.button("学習評価を実行"):
             evaluation = analyze_learning_history()
             st.write(evaluation)
-            st.session_state.evaluation_history.append(evaluation)
             
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # 評価を保存
+            current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             c.execute("INSERT INTO evaluations (username, date, evaluation) VALUES (?, ?, ?)",
-                      (st.session_state.username, now, evaluation))
+                    (st.session_state.username, current_date, evaluation))
             conn.commit()
+            
+            # 学習評価履歴の更新
+            if 'evaluation_history' not in st.session_state:
+                st.session_state.evaluation_history = []
+            st.session_state.evaluation_history.append((current_date, evaluation))
+        
+        # 学習評価履歴の表示
+        st.subheader("学習評価履歴")
+        if 'evaluation_history' in st.session_state:
+            for date, eval_content in st.session_state.evaluation_history:
+                with st.expander(f"{date}: {eval_content[:30]}..."):
+                    st.write(eval_content)
+        else:
+            st.write("まだ学習評価が実行されていません。")
 
 
 
