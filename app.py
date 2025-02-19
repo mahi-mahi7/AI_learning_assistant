@@ -7,7 +7,7 @@ from cryptography.fernet import Fernet
 import os
 
 # 鍵の読み込み
-fernet_key = "YKjHFbJ6i60ThzUXLH_NUtueLb-YR6fW2d1WcmPg1II="
+fernet_key = st.secrets["FERNET_KEY"]
 if fernet_key:
     fernet = Fernet(fernet_key.encode())
 else:
