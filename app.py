@@ -122,8 +122,16 @@ if check_password():
         st.session_state.current_problem = None
     if 'problem_generated' not in st.session_state:
         st.session_state.problem_generated = False
+
+
     if 'weak_problem_generated' not in st.session_state:
         st.session_state.weak_problem_generated = False
+    if 'weak_problem_selection_state' not in st.session_state:
+        st.session_state.weak_problem_selection_state = False
+    if 'weak_problem_options' not in st.session_state:
+        st.session_state.weak_problem_options = []
+
+
     if 'sessions' not in st.session_state:
         st.session_state.sessions = []
     if 'current_session' not in st.session_state:
@@ -175,7 +183,7 @@ if check_password():
         messages.append({"role": "user", "content": prompt})
 
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4",
             messages=messages
         )
         return response.choices[0].message.content
@@ -195,9 +203,9 @@ if check_password():
     2. 最終回答の評価：導き出された答えが正しいかを確認
     3. フィードバック：
     - 正解の場合：「正解です!」と表示し、問題の解説を提示
-    - 不正解の場合：「不正解です」と表示し、どの段階で間違えたのかを指摘し、改善のためのヒントを提供（答えに直接つながるものは避ける）
-    4. 解答過程または最終回答が空白の場合は、その部分が未回答であることを指摘
-    文末の表現はすべて「です、ます」口調に統一してください。"""
+    - 不正解の場合：「不正解です」と表示し、どの段階で間違えたのかを指摘し、解法ののヒントを提供（答えに直接つながるものは避ける）
+    4. 回答過程または回答が空白の場合は、解法のヒントを提供（答えに直接つながるものは避ける）
+    """
         return generate_response(prompt)
     
 
@@ -217,8 +225,8 @@ if check_password():
         
         # AIに解答履歴を分析させるプロンプト
         analysis_prompt = f"""
-        以下の学習者の解答履歴を分析し、以下の点を特定してください：
-        1. 解答過程での主な間違いのパターン
+        以下の学習者の回答履歴を分析し、以下の点を特定してください：
+        1. 回答過程での主な間違いのパターン
         2. 理解が不足している数学的概念
         3. 克服すべき具体的なポイント
         
@@ -239,34 +247,108 @@ if check_password():
             return analysis_data, None
         except json.JSONDecodeError:
             return None, "分析結果の解析に失敗しました。"
-        
+    
 
-    def generate_optimal_problem(analysis_data):
-        """分析結果に基づいて最適な問題を生成する関数"""
-        if not analysis_data:
-            return generate_problem("基礎的な問題", "基本的な理解度を確認するための問題を出題してください。")
-        
-        # 弱点と概念を組み合わせて問題生成条件を作成
-        weak_points = ", ".join(analysis_data["weak_points"])
-        concepts = ", ".join(analysis_data["concepts"])
-        
-        prompt = f"""
-        以下の学習者の特性に基づいて問題を生成してください：
-        
-        弱点: {weak_points}
-        要復習の概念: {concepts}
-        推奨: {analysis_data["recommendation"]}
-        
-        これらの点を克服するのに適した問題を生成してください。
-        """
-        
-        return generate_problem("カスタマイズされた問題", prompt)
-
+    def generate_multiple_optimal_problems(analysis_data=None, count=3):
+        """分析結果に基づいて指定された数の最適な問題を生成する関数"""
+        problems = []
+        for _ in range(count):
+            if not analysis_data:
+                problem = generate_problem("基礎", "基本的な理解度を確認するための問題を出題してください。")
+            else:
+                # 弱点と概念を組み合わせて問題生成条件を作成
+                weak_points = ", ".join(analysis_data["weak_points"])
+                concepts = ", ".join(analysis_data["concepts"])
+                
+                prompt = f"""
+                以下の学習者の特性に基づいて問題を生成してください：
+                
+                弱点: {weak_points}
+                要復習の概念: {concepts}
+                推奨: {analysis_data["recommendation"]}
+                
+                これらの点を克服するのに適した問題を生成してください。
+                """
+                
+                problem = generate_problem("カスタマイズされた問題", prompt)
+            problems.append(problem)
+        return problems
+    
 
     def analyze_learning_history():
-        history_summary = ", ".join([f"{unit}: {count}回" for unit, count in st.session_state.learning_history.items()])
-        prompt = f"学習履歴: {history_summary}\nこの学習履歴に基づいて、単元ごとに学習者の特に優れていることや以前に比べてできるようになったことがあればその具体的な点、学習者がつまづいている具体的な点、つまづきを克服するための具体的なアドバイスの3つの観点を明確な根拠と共にそれぞれ行を変更して1～2文で説明・提案してください。文末の表現はすべて「です、ます」口調に統一するようにしてください。"
+        # 問題解決機能の履歴を取得
+        c.execute("SELECT session FROM sessions WHERE username = ? AND function = '問題解決' ORDER BY rowid DESC", (st.session_state.username,))
+        problem_solving_sessions = c.fetchall()
+        
+        # 問題出題機能の履歴を取得
+        c.execute("""
+            SELECT problem, solution_process, user_answer, ai_feedback, user_question, ai_response, function
+            FROM problems 
+            WHERE username = ? AND (function = '問題出題' OR function = '学習者に応じた問題出題')
+            ORDER BY rowid DESC
+        """, (st.session_state.username,))
+        problem_history = c.fetchall()
+        
+        # 学習履歴のサマリー作成
+        history_summary = ""
+        
+        # 問題解決セッションの分析
+        if problem_solving_sessions:
+            problem_solving_content = []
+            for session in problem_solving_sessions:
+                session_data = json.loads(session[0])
+                questions = [msg['content'] for msg in session_data if msg['role'] == 'user']
+                problem_solving_content.extend(questions)
+            
+            history_summary += "【問題解決での質問内容】\n"
+            history_summary += "\n".join([f"・{q}" for q in problem_solving_content[:5]])  # 最新5件のみ表示
+            history_summary += f"\n\n質問セッション総数: {len(problem_solving_sessions)}件"
+        
+        # 問題出題履歴の分析
+        if problem_history:
+            # 問題出題機能の履歴
+            standard_problems = [p for p in problem_history if p[6] == '問題出題']
+            optimal_problems = [p for p in problem_history if p[6] == '学習者に応じた問題出題']
+            
+            if standard_problems:
+                history_summary += "\n\n【問題出題機能での学習履歴】"
+                for problem, solution, answer, feedback, question, response, _ in standard_problems[:3]:  # 最新3件のみ表示
+                    history_summary += f"\n・問題: {problem}"
+                    history_summary += f"\n  解答過程: {solution}"
+                    history_summary += f"\n  回答: {answer}"
+                    history_summary += f"\n  フィードバック: {feedback}"
+                    if question and response:
+                        history_summary += f"\n  追加質問: {question}"
+                        history_summary += f"\n  AI回答: {response}"
+            
+            if optimal_problems:
+                history_summary += "\n\n【学習者に応じた問題出題での学習履歴】"
+                for problem, solution, answer, feedback, question, response, _ in optimal_problems[:3]:  # 最新3件のみ表示
+                    history_summary += f"\n・問題: {problem}"
+                    history_summary += f"\n  解答過程: {solution}"
+                    history_summary += f"\n  回答: {answer}"
+                    history_summary += f"\n  フィードバック: {feedback}"
+                    if question and response:
+                        history_summary += f"\n  追加質問: {question}"
+                        history_summary += f"\n  AI回答: {response}"
+            
+            # 全体の正解率の計算
+            correct_count = sum(1 for _, _, _, feedback, _, _, _ in problem_history if feedback and "正解です" in feedback)
+            if len(problem_history) > 0:
+                correct_rate = (correct_count / len(problem_history)) * 100
+                history_summary += f"\n\n全体の正解率: {correct_rate:.1f}%"
+        
+        # プロンプト生成
+        prompt = f"""以下の学習履歴に基づいて、
+    1. 学習者の特に優れている点や成長が見られる点
+    2. 学習者がつまづいている点や課題
+    3. 課題を克服するための具体的なアドバイス
+    の3つの観点について、具体的な根拠を示しながら1～2文で説明・提案してください。
+
+    {history_summary}"""
+        
         return generate_response(prompt)
+
 
     def display_message(message, is_user=False):
         with st.chat_message("user" if is_user else "assistant"):
@@ -310,7 +392,7 @@ if check_password():
     def main():
         #試作（2/7 13:13）
         if 'global_instruction' not in st.session_state:
-            st.session_state.global_instruction = """ あなたは中学生3年生向けの学習支援AIアシスタントです。
+            st.session_state.global_instruction = """ あなたは中学生3年生向けの数学科目の学習支援AIアシスタントです。
  以下の点に注意して応答してください：
 1. 中学生3年生が理解できる言葉遣い、漢字、語彙を用いて説明する
 2. 300字以内で回答を行う
@@ -641,7 +723,7 @@ if check_password():
         if st.session_state.problem_generated:
             st.write("問題:", st.session_state.current_problem)
             
-            solution_process = st.text_area("解答の過程（式や考え方）を記入してください")
+            solution_process = st.text_area("回答の過程（式や考え方）を記入してください")
             user_answer = st.text_input("回答を入力してください")
             
             if st.button("回答を送信"):
@@ -691,26 +773,40 @@ if check_password():
     def optimal_problem_generation():
         st.subheader("学習者に応じた問題出題")
         
-        if not st.session_state.weak_problem_generated:
+        if not st.session_state.weak_problem_generated and not st.session_state.weak_problem_selection_state:
             if st.button("学習者に応じた問題を生成"):
                 # 解答履歴を分析
                 analysis_data, error = analyze_solution_history(st.session_state.username)
                 
                 if error:
-                    st.session_state.current_problem = generate_problem("基礎", "基本的な理解度を確認するための問題を出題してください。")
+                    st.session_state.weak_problem_options = generate_multiple_optimal_problems(None)
                 else:
-                    # 分析に基づいて問題を生成
-                    st.session_state.current_problem = generate_optimal_problem(analysis_data)
+                    # 分析に基づいて複数の問題を生成
+                    st.session_state.weak_problem_options = generate_multiple_optimal_problems(analysis_data)
                 
-                st.session_state.weak_problem_generated = True
-                st.session_state.conversation_history = []
+                st.session_state.weak_problem_selection_state = True
+                st.rerun()
+                
+        elif st.session_state.weak_problem_selection_state and not st.session_state.weak_problem_generated:
+            st.write("以下の問題から取り組みたい問題を選択してください：")
+            for i, problem in enumerate(st.session_state.weak_problem_options):
+                if st.button(f"問題 {i+1}: {problem}"):
+                    st.session_state.current_problem = problem
+                    st.session_state.weak_problem_generated = True
+                    st.session_state.weak_problem_selection_state = False
+                    st.session_state.conversation_history = []
+                    st.rerun()
+            
+            if st.button("問題を再生成"):
+                st.session_state.weak_problem_selection_state = False
                 st.rerun()
 
         if st.session_state.weak_problem_generated:
             st.write("問題:", st.session_state.current_problem)
             
-            solution_process = st.text_area("解答の過程（式や考え方）を記入してください")
+            solution_process = st.text_area("回答の過程（式や考え方）を記入してください")
             user_answer = st.text_input("回答を入力してください")
+
             
             if st.button("回答を送信"):
                 ai_feedback = evaluate_answer(st.session_state.current_problem, solution_process, user_answer)
