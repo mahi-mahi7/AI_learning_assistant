@@ -6,18 +6,12 @@ import json
 from cryptography.fernet import Fernet
 import os
 
-# 鍵の生成と保存（初回のみ実行）
-# key = Fernet.generate_key()
-# with open("secret.key", "wb") as key_file:
-#     key_file.write(key)
-
 # 鍵の読み込み
-fernet_key = st.secrets["FERNET_KEY"]
+fernet_key = "YKjHFbJ6i60ThzUXLH_NUtueLb-YR6fW2d1WcmPg1II="
 if fernet_key:
     fernet = Fernet(fernet_key.encode())
 else:
     raise ValueError("FERNET_KEY not found in environment variables")
-
 
 # パスワード確認機能
 def check_password():
@@ -61,8 +55,10 @@ if check_password():
     # 新しいテーブルの作成
     c.execute('''CREATE TABLE IF NOT EXISTS sessions
                  (username TEXT, function TEXT, session TEXT)''')
+    
     c.execute('''CREATE TABLE IF NOT EXISTS problems
-                 (username TEXT, function TEXT, problem TEXT, user_answer TEXT, ai_feedback TEXT, user_question TEXT, ai_response TEXT)''')
+                (username TEXT, function TEXT, problem TEXT, solution_process TEXT, user_answer TEXT, ai_feedback TEXT, user_question TEXT, ai_response TEXT)''')
+
     c.execute('''CREATE TABLE IF NOT EXISTS evaluations
                  (username TEXT, date TEXT, evaluation TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS learning_history
@@ -78,15 +74,22 @@ if check_password():
     if 'function' not in columns:
         c.execute('''ALTER TABLE user_prompts ADD COLUMN function TEXT''')
     conn.commit()
-
-
-
     
     #セッション分析保存テーブル（new 2/8 8:27）
     c.execute('''CREATE TABLE IF NOT EXISTS sessions
                  (username TEXT, function TEXT, session TEXT)''')
+    
     c.execute('''CREATE TABLE IF NOT EXISTS problems
-                 (username TEXT, function TEXT, problem TEXT, user_answer TEXT, ai_feedback TEXT, user_question TEXT, ai_response TEXT)''')
+                (username TEXT, 
+                function TEXT, 
+                problem TEXT, 
+                solution_process TEXT,
+                user_answer TEXT, 
+                ai_feedback TEXT, 
+                user_question TEXT, 
+                ai_response TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+
     c.execute('''CREATE TABLE IF NOT EXISTS evaluations
                  (username TEXT, date TEXT, evaluation TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS learning_history
@@ -107,7 +110,6 @@ if check_password():
         c.execute('''ALTER TABLE problems ADD COLUMN ai_response TEXT''')
 
     conn.commit()
-
 
 # セッション状態の初期化
     if 'messages' not in st.session_state:
@@ -147,7 +149,6 @@ if check_password():
     if 'problem_solving_instructions' not in st.session_state:
         st.session_state.problem_solving_instructions = {}
 
-
     # 学習段階に応じた設定
     learning_stages = [ "中学1年生", "中学2年生", "中学3年生"]
 
@@ -157,7 +158,6 @@ if check_password():
         "中学2年生": ["式の計算", "連立方程式", "一次関数", "平行と合同", "三角形と四角形", "場合の数と確率"],
         "中学3年生": ["多項式", "平方根", "二次方程式", "関数y=ax^2", "相似な図形", "円", "三平方の定理", "標本調査"],
     }
-
 
     def generate_response(prompt, username="", function=""):
         messages = [
@@ -175,25 +175,93 @@ if check_password():
         messages.append({"role": "user", "content": prompt})
 
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-3.5-turbo",
             messages=messages
         )
         return response.choices[0].message.content
-
-
-
-
 
     def generate_problem(unit, additional_conditions=""):
         prompt = f"{st.session_state.learning_stage}に向けて適切とされる{unit}に関する問題を1つ作成してください。その際、解答は生成しないでください。また、できる限り解が整数となる問題を生成するようにしてください。"
         if additional_conditions:
             prompt += f" 追加条件: {additional_conditions}"
         return generate_response(prompt, username=st.session_state.username, function="問題出題")
-
-
-    def evaluate_answer(problem, user_answer):
-        prompt = f"問題: {problem}\n学習者の回答: {user_answer}\nこの回答に対して確実な正誤判定を行い、正解であれば「正解です!」と表示した後に解説を行い、不正解であれば「不正解です」と表示した後に解法のヒントを提供してください。また学習者の回答欄が空白の場合は無回答であるため不正解としてください。文末の表現はすべて「です、ます」口調に統一してください。"
+    
+    def evaluate_answer(problem, solution_process, user_answer):
+        prompt = f"""問題: {problem}
+    学習者の解答過程: {solution_process}
+    学習者の最終回答: {user_answer}
+    この回答に対して以下の手順で評価を行ってください：
+    1. 回答過程の評価：解法の手順が正しいか、計算過程に誤りがないかを確認
+    2. 最終回答の評価：導き出された答えが正しいかを確認
+    3. フィードバック：
+    - 正解の場合：「正解です!」と表示し、問題の解説を提示
+    - 不正解の場合：「不正解です」と表示し、どの段階で間違えたのかを指摘し、改善のためのヒントを提供（答えに直接つながるものは避ける）
+    4. 解答過程または最終回答が空白の場合は、その部分が未回答であることを指摘
+    文末の表現はすべて「です、ます」口調に統一してください。"""
         return generate_response(prompt)
+    
+
+    def analyze_solution_history(username):
+        """学習者の解答履歴から弱点を分析する関数"""
+        # 問題出題機能での解答履歴を取得
+        c.execute("""
+            SELECT problem, solution_process, user_answer, ai_feedback 
+            FROM problems 
+            WHERE username = ? AND function = '問題出題'
+            ORDER BY rowid DESC LIMIT 5
+        """, (username,))
+        history = c.fetchall()
+        
+        if not history:
+            return None, "まだ十分な解答履歴がありません。"
+        
+        # AIに解答履歴を分析させるプロンプト
+        analysis_prompt = f"""
+        以下の学習者の解答履歴を分析し、以下の点を特定してください：
+        1. 解答過程での主な間違いのパターン
+        2. 理解が不足している数学的概念
+        3. 克服すべき具体的なポイント
+        
+        解答履歴：
+        {json.dumps(history, ensure_ascii=False, indent=2)}
+        
+        分析結果を以下のJSON形式で返してください：
+        {{
+            "weak_points": ["弱点1", "弱点2", ...],
+            "concepts": ["要復習の概念1", "要復習の概念2", ...],
+            "recommendation": "推奨される問題タイプの説明"
+        }}
+        """
+        
+        analysis_result = generate_response(analysis_prompt)
+        try:
+            analysis_data = json.loads(analysis_result)
+            return analysis_data, None
+        except json.JSONDecodeError:
+            return None, "分析結果の解析に失敗しました。"
+        
+
+    def generate_optimal_problem(analysis_data):
+        """分析結果に基づいて最適な問題を生成する関数"""
+        if not analysis_data:
+            return generate_problem("基礎的な問題", "基本的な理解度を確認するための問題を出題してください。")
+        
+        # 弱点と概念を組み合わせて問題生成条件を作成
+        weak_points = ", ".join(analysis_data["weak_points"])
+        concepts = ", ".join(analysis_data["concepts"])
+        
+        prompt = f"""
+        以下の学習者の特性に基づいて問題を生成してください：
+        
+        弱点: {weak_points}
+        要復習の概念: {concepts}
+        推奨: {analysis_data["recommendation"]}
+        
+        これらの点を克服するのに適した問題を生成してください。
+        """
+        
+        return generate_problem("カスタマイズされた問題", prompt)
+
 
     def analyze_learning_history():
         history_summary = ", ".join([f"{unit}: {count}回" for unit, count in st.session_state.learning_history.items()])
@@ -203,8 +271,6 @@ if check_password():
     def display_message(message, is_user=False):
         with st.chat_message("user" if is_user else "assistant"):
             st.markdown(message)
-
-
 
     def login():
         st.subheader("ログイン")
@@ -241,14 +307,13 @@ if check_password():
             except sqlite3.IntegrityError:
                 st.error("登録中にエラーが発生しました。もう一度お試しください。")
 
-
     def main():
         #試作（2/7 13:13）
         if 'global_instruction' not in st.session_state:
             st.session_state.global_instruction = """ あなたは中学生3年生向けの学習支援AIアシスタントです。
  以下の点に注意して応答してください：
 1. 中学生3年生が理解できる言葉遣い、漢字、語彙を用いて説明する
-2. 400字以内で完結させ、回答を行う。
+2. 300字以内で回答を行う
 3. 質問の意図を正確に理解し、的確に回答する
 4. 文末の表現はすべて「です、ます」口調で統一する
 5.  """
@@ -271,7 +336,6 @@ if check_password():
                 st.session_state.username = ""
                 st.session_state.user_type = ""
                 st.rerun()
-
 
     def student_view():
         st.session_state.learning_stage = st.sidebar.selectbox("学習段階を選択してください", learning_stages, index=learning_stages.index("中学3年生"))
@@ -365,8 +429,6 @@ if check_password():
                 except Exception as e:
                     st.error(f"プロンプトの保存中にエラーが発生しました: {e}")
 
-
-
         # ユーザーの活動を表示
         if selected_function == "問題解決":
             st.subheader("問題解決セッション")
@@ -382,22 +444,71 @@ if check_password():
             else:
                 st.write("このユーザーの問題解決セッションはまだありません。")
 
-        
+
         elif selected_function in ["問題出題", "学習者に応じた問題出題"]:
             st.subheader(selected_function)
-            c.execute("SELECT problem, COALESCE(user_answer, 'No answer yet') as user_answer, COALESCE(ai_feedback, 'No feedback yet') as ai_feedback, COALESCE(user_question, 'No question yet') as user_question, COALESCE(ai_response, 'No response yet') as ai_response FROM problems WHERE username=? AND function=?", (selected_user, selected_function))
+            c.execute("""
+                SELECT 
+                    problem,
+                    COALESCE(solution_process, 'No solution process recorded') as solution_process,
+                    COALESCE(user_answer, 'No answer yet') as user_answer,
+                    COALESCE(ai_feedback, 'No feedback yet') as ai_feedback,
+                    COALESCE(user_question, 'No question yet') as user_question,
+                    COALESCE(ai_response, 'No response yet') as ai_response,
+                    datetime('now', 'localtime') as timestamp
+                FROM problems 
+                WHERE username=? AND function=?
+                ORDER BY rowid ASC
+            """, (selected_user, selected_function))
             problems = c.fetchall()
+            
             if problems:
-                for i, (problem, user_answer, ai_feedback, user_question, ai_response) in enumerate(problems):
-                    with st.expander(f"問題 {i+1}"):
-                        display_message(f"問題: {problem}", is_user=False)
-                        display_message(f"学習者の回答: {user_answer}", is_user=True)
-                        display_message(f"AIのフィードバック: {ai_feedback}", is_user=False)
+                for i, (problem, solution_process, user_answer, ai_feedback, user_question, ai_response, timestamp) in enumerate(problems):
+                    with st.expander(f"問題 {i+1} - {problem[:50]}..."):
+                        # 問題と解答過程をカードスタイルで表示
+                        st.markdown("### 問題と解答")
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.markdown("**🎯 問題**")
+                            st.info(problem)
+                        
+                        with col2:
+                            st.markdown("**📝 解答過程**")
+                            st.info(solution_process)
+                        
+                        # 回答とフィードバックの表示
+                        st.markdown("### 回答とフィードバック")
+                        col3, col4 = st.columns(2)
+                        
+                        with col3:
+                            st.markdown("**✍️ 最終回答**")
+                            st.success(user_answer)
+                        
+                        with col4:
+                            st.markdown("**🤖 AIフィードバック**")
+                            st.warning(ai_feedback)
+                        
+                        # 追加の質問と回答があれば表示
                         if user_question != 'No question yet':
-                            display_message(f"学習者の質問: {user_question}", is_user=True)
-                            display_message(f"AIの回答: {ai_response}", is_user=False)
+                            st.markdown("### 追加の質問と回答")
+                            col5, col6 = st.columns(2)
+                            
+                            with col5:
+                                st.markdown("**❓ 学習者の質問**")
+                                st.info(user_question)
+                            
+                            with col6:
+                                st.markdown("**💡 AIの回答**")
+                                st.success(ai_response)
+                        
+                        # 分析データの表示（既存のセッション分析があれば）
+                        if hasattr(st.session_state, 'session_analyses'):
+                            st.markdown("### 💭 分析")
+                            st.text(st.session_state.session_analyses.get(i, "この問題の分析データはまだありません。"))
             else:
-                st.write(f"このユーザーの{selected_function}履歴はまだありません。")
+                st.warning(f"このユーザーの{selected_function}履歴はまだありません。")
+
         
         elif selected_function == "学習評価":
             st.subheader("学習評価履歴")
@@ -409,7 +520,6 @@ if check_password():
                         st.write(evaluation)
             else:
                 st.write("このユーザーの学習評価履歴はまだありません。")
-
 
         # セッション分析の表示
         st.subheader(f"{selected_function}セッション分析")
@@ -447,7 +557,6 @@ if check_password():
                     st.write(session_analyses[session_id])
         else:
             st.write(f"このユーザーの{selected_function}セッションはまだありません。")
-
 
     def problem_solving(username=""):
         st.subheader("問題解決")
@@ -488,36 +597,62 @@ if check_password():
             st.rerun()
 
 
+    def generate_multiple_problems(unit, additional_conditions, count=3):
+        """指定された数の問題を生成する関数"""
+        problems = []
+        for _ in range(count):
+            problem = generate_problem(unit, additional_conditions)
+            problems.append(problem)
+        return problems
+
     def problem_generation():
         st.subheader("問題出題")
         
-        if not st.session_state.problem_generated:
+        # セッション状態の初期化
+        if 'problem_selection_state' not in st.session_state:
+            st.session_state.problem_selection_state = False
+        if 'problem_options' not in st.session_state:
+            st.session_state.problem_options = []
+        
+        if not st.session_state.problem_generated and not st.session_state.problem_selection_state:
             unit = st.selectbox("単元を選択してください", units[st.session_state.learning_stage])
             additional_conditions = st.text_area("問題の詳細な条件を入力してください（任意）")
             
             if st.button("問題を生成"):
-                st.session_state.current_problem = generate_problem(unit, additional_conditions)
-                st.session_state.problem_generated = True
-                st.session_state.conversation_history = []
+                st.session_state.problem_options = generate_multiple_problems(unit, additional_conditions)
+                st.session_state.problem_selection_state = True
                 st.rerun()
         
+        elif st.session_state.problem_selection_state and not st.session_state.problem_generated:
+            st.write("以下の問題から取り組みたい問題を選択してください：")
+            for i, problem in enumerate(st.session_state.problem_options):
+                if st.button(f"問題 {i+1}: {problem}"):
+                    st.session_state.current_problem = problem
+                    st.session_state.problem_generated = True
+                    st.session_state.problem_selection_state = False
+                    st.session_state.conversation_history = []
+                    st.rerun()
+            
+            if st.button("問題を再生成"):
+                st.session_state.problem_selection_state = False
+                st.rerun()
+
+
         if st.session_state.problem_generated:
             st.write("問題:", st.session_state.current_problem)
             
+            solution_process = st.text_area("解答の過程（式や考え方）を記入してください")
             user_answer = st.text_input("回答を入力してください")
             
             if st.button("回答を送信"):
-                ai_feedback = evaluate_answer(st.session_state.current_problem, user_answer)
+                ai_feedback = evaluate_answer(st.session_state.current_problem, solution_process, user_answer)
                 st.session_state.conversation_history.append(("AI", ai_feedback))
-    
-                c.execute("INSERT INTO problems (username, function, problem, user_answer, ai_feedback) VALUES (?, ?, ?, ?, ?)",
-                           (st.session_state.username, "問題出題", 
-                            st.session_state.current_problem, user_answer, ai_feedback))
+
+                c.execute("INSERT INTO problems (username, function, problem, solution_process, user_answer, ai_feedback) VALUES (?, ?, ?, ?, ?, ?)",
+                        (st.session_state.username, "問題出題", 
+                            st.session_state.current_problem, solution_process, user_answer, ai_feedback))
                 conn.commit()
 
-            
-            
-                
                 if st.session_state.current_problem.split()[0] in st.session_state.learning_history:
                     st.session_state.learning_history[st.session_state.current_problem.split()[0]] += 1
                 else:
@@ -532,7 +667,6 @@ if check_password():
             
             for role, content in st.session_state.conversation_history:
                 display_message(content, role == "User")
-
 
             if st.session_state.conversation_history:
                 user_question = st.text_input("AIの解説に対する質問があれば入力してください")
@@ -553,41 +687,41 @@ if check_password():
                 st.session_state.problem_generated = False
                 st.rerun()
 
+
     def optimal_problem_generation():
         st.subheader("学習者に応じた問題出題")
         
-        if not st.session_state.learning_history:
-            st.write("まだ学習履歴がありません。問題出題機能を使って問題を解いてみましょう。")
-            return
-        
         if not st.session_state.weak_problem_generated:
             if st.button("学習者に応じた問題を生成"):
-                weak_units = [unit for unit, count in st.session_state.learning_history.items() if count < 3]
-                if weak_units:
-                    selected_unit = min(st.session_state.learning_history, key=st.session_state.learning_history.get)
-                    st.session_state.current_problem = generate_problem(selected_unit, "この単元は学習者の弱点です。より基本的な問題を出題してください。")
+                # 解答履歴を分析
+                analysis_data, error = analyze_solution_history(st.session_state.username)
+                
+                if error:
+                    st.session_state.current_problem = generate_problem("基礎", "基本的な理解度を確認するための問題を出題してください。")
                 else:
-                    selected_unit = max(st.session_state.learning_history, key=st.session_state.learning_history.get)
-                    st.session_state.current_problem = generate_problem(selected_unit, "この単元は学習者が得意です。より難しい問題を出題してください。")
+                    # 分析に基づいて問題を生成
+                    st.session_state.current_problem = generate_optimal_problem(analysis_data)
+                
                 st.session_state.weak_problem_generated = True
                 st.session_state.conversation_history = []
                 st.rerun()
-        
+
         if st.session_state.weak_problem_generated:
             st.write("問題:", st.session_state.current_problem)
             
+            solution_process = st.text_area("解答の過程（式や考え方）を記入してください")
             user_answer = st.text_input("回答を入力してください")
             
             if st.button("回答を送信"):
-                ai_feedback = evaluate_answer(st.session_state.current_problem, user_answer)
+                ai_feedback = evaluate_answer(st.session_state.current_problem, solution_process, user_answer)
                 st.session_state.conversation_history.append(("AI", ai_feedback))
                 
-                c.execute("INSERT INTO problems (username, function, problem, user_answer, ai_feedback) VALUES (?, ?, ?, ?, ?)",
-                          (st.session_state.username, st.session_state.current_function, st.session_state.current_problem, user_answer, ai_feedback))
+                c.execute("INSERT INTO problems (username, function, problem, solution_process, user_answer, ai_feedback) VALUES (?, ?, ?, ?, ?, ?)",
+                        (st.session_state.username, st.session_state.current_function, st.session_state.current_problem, solution_process, user_answer, ai_feedback))
                 conn.commit()
-                
+
                 st.rerun()
-            
+
             for role, content in st.session_state.conversation_history:
                 display_message(content, role == "User")
             
@@ -601,14 +735,15 @@ if check_password():
                     st.session_state.conversation_history.append(("AI", ai_response))
                     
                     c.execute("UPDATE problems SET user_question = ?, ai_response = ? WHERE username = ? AND function = ? AND problem = ?",
-                              (user_question, ai_response, st.session_state.username, st.session_state.current_function, st.session_state.current_problem))
+                            (user_question, ai_response, st.session_state.username, st.session_state.current_function, st.session_state.current_problem))
                     conn.commit()
                     
                     st.rerun()
             
-            if st.button("新しい問題を生成"):
+            if st.button("新しい問題"):
                 st.session_state.weak_problem_generated = False
                 st.rerun()
+
 
     def learning_evaluation():
         st.subheader("学習評価")
