@@ -54,17 +54,13 @@ if check_password():
 
     # 新しいテーブルの作成
     c.execute('''CREATE TABLE IF NOT EXISTS sessions
-                 (username TEXT, function TEXT, session TEXT)''')
-    
+                 (username TEXT, function TEXT, session TEXT)''')   
     c.execute('''CREATE TABLE IF NOT EXISTS problems
                 (username TEXT, function TEXT, problem TEXT, solution_process TEXT, user_answer TEXT, ai_feedback TEXT, user_question TEXT, ai_response TEXT)''')
-
     c.execute('''CREATE TABLE IF NOT EXISTS evaluations
                  (username TEXT, date TEXT, evaluation TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS learning_history
                  (username TEXT, unit TEXT, count INTEGER)''')
-
-    # ユーザープロンプトを保存するテーブル(new 2/8 10:04)
     c.execute('''CREATE TABLE IF NOT EXISTS user_prompts
                 (username TEXT, function TEXT, prompt TEXT, PRIMARY KEY (username, function))''')
 
@@ -122,16 +118,12 @@ if check_password():
         st.session_state.current_problem = None
     if 'problem_generated' not in st.session_state:
         st.session_state.problem_generated = False
-
-
     if 'weak_problem_generated' not in st.session_state:
         st.session_state.weak_problem_generated = False
     if 'weak_problem_selection_state' not in st.session_state:
         st.session_state.weak_problem_selection_state = False
     if 'weak_problem_options' not in st.session_state:
         st.session_state.weak_problem_options = []
-
-
     if 'sessions' not in st.session_state:
         st.session_state.sessions = []
     if 'current_session' not in st.session_state:
@@ -206,8 +198,7 @@ if check_password():
     - 不正解の場合：「不正解です」と表示し、どの段階で間違えたのかを指摘し、解法ののヒントを提供（答えに直接つながるものは避ける）
     4. 回答過程または回答が空白の場合は、解法のヒントを提供（答えに直接つながるものは避ける）
     """
-        return generate_response(prompt)
-    
+        return generate_response(prompt)    
 
     def analyze_solution_history(username):
         """学習者の解答履歴から弱点を分析する関数"""
@@ -240,7 +231,7 @@ if check_password():
             "recommendation": "推奨される問題タイプの説明"
         }}
         """
-        
+
         analysis_result = generate_response(analysis_prompt)
         try:
             analysis_data = json.loads(analysis_result)
@@ -248,7 +239,6 @@ if check_password():
         except json.JSONDecodeError:
             return None, "分析結果の解析に失敗しました。"
     
-
     def generate_multiple_optimal_problems(analysis_data=None, count=3):
         """分析結果に基づいて指定された数の最適な問題を生成する関数"""
         problems = []
@@ -272,8 +262,7 @@ if check_password():
                 
                 problem = generate_problem("カスタマイズされた問題", prompt)
             problems.append(problem)
-        return problems
-    
+        return problems   
 
     def analyze_learning_history():
         # 問題解決機能の履歴を取得
@@ -347,9 +336,74 @@ if check_password():
 
     {history_summary}"""
         
-        return generate_response(prompt)
+        return generate_response(prompt)    
 
+    def analyze_student_status(username):
+        """個々の学習者の学習状況を分析する関数"""
+        try:
+            # 問題解決と問題出題の履歴を取得
+            c.execute("""
+                SELECT problem, solution_process, user_answer, ai_feedback 
+                FROM problems 
+                WHERE username = ? 
+                AND (function = '問題出題' OR function = '学習者に応じた問題出題')
+                ORDER BY rowid DESC
+            """, (username,))
+            problem_history = c.fetchall()
+            
+            # 評価履歴を取得
+            c.execute("""
+                SELECT evaluation 
+                FROM evaluations 
+                WHERE username = ? 
+                ORDER BY date DESC 
+                LIMIT 5
+            """, (username,))
+            evaluation_history = c.fetchall()
+            
+            # データが存在しない場合のデフォルト値設定
+            if not problem_history:
+                problem_history = []
+            if not evaluation_history:
+                evaluation_history = []
+            
+            # 正答率の計算
+            if problem_history:
+                correct_answers = sum(1 for _, _, _, feedback in problem_history if feedback and "正解です" in feedback)
+                correct_rate = (correct_answers / len(problem_history)) * 100
+            else:
+                correct_rate = 0
+                
+            # 学習状況の評価
+            if correct_rate >= 80:
+                status = "◎"
+            elif correct_rate >= 60:
+                status = "○"
+            else:
+                status = "△"
 
+            # データが少ない場合の特別なメッセージ
+            if len(problem_history) == 0:
+                summary = "学習履歴なし"
+            else:
+                # 分析用プロンプト作成
+                analysis_prompt = f"""
+                以下の学習履歴から、学習者の具体的な学習状況を20文字程度で要約してください。
+                
+                正答率: {correct_rate}%
+                問題履歴数: {len(problem_history)}件
+                評価履歴数: {len(evaluation_history)}件
+                """
+                
+                summary = generate_response(analysis_prompt)[:20]
+            
+            return status, summary, correct_rate
+            
+        except Exception as e:
+            # エラーが発生した場合のデフォルト値を返す
+            print(f"Error analyzing student status for {username}: {str(e)}")
+            return "－", "データ取得エラー", 0
+        
     def display_message(message, is_user=False):
         with st.chat_message("user" if is_user else "assistant"):
             st.markdown(message)
@@ -434,30 +488,94 @@ if check_password():
         elif st.session_state.current_function == "学習評価":
             learning_evaluation()
 
-    # 教師用ダッシュボード
     def teacher_view():
         st.subheader("教師用ダッシュボード")
+        
+        # サイドバーでビューの選択
+        view_type = st.sidebar.radio(
+            "表示する情報を選択",
+            ["全体管理機能", "個別学習者管理機能"]
+        )
+        
+        if view_type == "全体管理機能":
+            # 全体管理機能のコード
+            if st.button("全学習者の最新の学習状況を分析"):
+                st.subheader("学習者の学習状況一覧")
+                
+                # 学習者一覧を取得
+                c.execute("SELECT username FROM users WHERE user_type='学習者'")
+                students = [row[0] for row in c.fetchall()]
+                
+                for student in students:
+                    st.markdown(f"### 学習者: {student}")
+                    
+                    # 問題解決機能の最新データ
+                    c.execute("""
+                        SELECT session 
+                        FROM sessions 
+                        WHERE username=? AND function='問題解決' 
+                        ORDER BY rowid DESC LIMIT 1
+                    """, (student,))
+                    problem_solving = c.fetchone()
+                    
+                    # 問題出題機能の最新データ
+                    c.execute("""
+                        SELECT problem, solution_process, user_answer, ai_feedback 
+                        FROM problems 
+                        WHERE username=? AND function IN ('問題出題', '学習者に応じた問題出題')
+                        ORDER BY rowid DESC LIMIT 1
+                    """, (student,))
+                    problem_generation = c.fetchone()
+                    
+                    # データ分析用のプロンプト作成と分析実行
+                    analysis_prompt = f"""
+                    以下の学習者の最新の学習データを分析し、学習者ごとの学習の理解度を「◎」「〇」「△」の段階ごとに表したうえで、その判断の根拠となるような学習状況を30字程度で要約してください。形式は「学習理解度:～、具体的な学習状況:～」としてください。：
+                    
+                    問題解決での活動: {json.dumps(problem_solving) if problem_solving else 'データなし'}
+                    問題出題での活動: {json.dumps(problem_generation) if problem_generation else 'データなし'}
+                    """
+                    
+                    analysis = generate_response(analysis_prompt)
+                    st.write(analysis)
+      
+            # 全体共通のインストラクション設定
+            st.subheader("全体共通のインストラクション設定")
+            st.session_state.global_instruction = st.text_area(
+                "全機能共通のインストラクションを設定", 
+                st.session_state.global_instruction, 
+                height=200
+            )
+            if st.button("全機能共通のインストラクションを更新"):
+                st.success("全機能共通のインストラクションが更新されました。")
+        
 
-        # 全機能共通のインストラクション設定
-        st.session_state.global_instruction = st.text_area("全機能共通のインストラクションを設定", st.session_state.global_instruction, height=200)
-        if st.button("全機能共通のインストラクションを更新"):
-            st.success("全機能共通のインストラクションが更新されました。")
+            # 全体共通のインストラクション設定
+            st.subheader("全体共通のインストラクション設定")
+            st.session_state.global_instruction = st.text_area(
+                "全機能共通のインストラクションを設定", 
+                st.session_state.global_instruction, 
+                height=200
+            )
+            if st.button("全機能共通のインストラクションを更新"):
+                st.success("全機能共通のインストラクションが更新されました。")
 
-        # ユーザー選択
-        c.execute("SELECT username FROM users WHERE user_type='学習者'")
-        users = [row[0] for row in c.fetchall()]
-        selected_user = st.selectbox("ユーザーを選択", users)
+        else:  # 個別学習者管理機能
+            # ユーザー選択
+            c.execute("SELECT username FROM users WHERE user_type='学習者'")
+            users = [row[0] for row in c.fetchall()]
+            selected_user = st.selectbox("ユーザーを選択", users)
 
-        # 機能選択
+        # 機能選択（個別学習者管理機能の中に移動）
         functions = ["問題解決", "問題出題", "学習者に応じた問題出題", "学習評価"]
         selected_function = st.selectbox("機能を選択", functions)
 
-        # 学習者ごとのプロンプト設定
+        # selected_userを使用するコード
         if selected_function == "問題解決":
             if 'problem_solving_instructions' not in st.session_state:
                 st.session_state.problem_solving_instructions = {}
 
             if selected_user not in st.session_state.problem_solving_instructions:
+
                 # データベースからプロンプトを読み込む
                 c.execute("SELECT prompt FROM user_prompts WHERE username=? AND function=?", (selected_user, "問題解決"))
                 result = c.fetchone()
@@ -526,7 +644,6 @@ if check_password():
             else:
                 st.write("このユーザーの問題解決セッションはまだありません。")
 
-
         elif selected_function in ["問題出題", "学習者に応じた問題出題"]:
             st.subheader(selected_function)
             c.execute("""
@@ -590,7 +707,6 @@ if check_password():
                             st.text(st.session_state.session_analyses.get(i, "この問題の分析データはまだありません。"))
             else:
                 st.warning(f"このユーザーの{selected_function}履歴はまだありません。")
-
         
         elif selected_function == "学習評価":
             st.subheader("学習評価履歴")
@@ -678,7 +794,6 @@ if check_password():
 
             st.rerun()
 
-
     def generate_multiple_problems(unit, additional_conditions, count=3):
         """指定された数の問題を生成する関数"""
         problems = []
@@ -718,7 +833,6 @@ if check_password():
             if st.button("問題を再生成"):
                 st.session_state.problem_selection_state = False
                 st.rerun()
-
 
         if st.session_state.problem_generated:
             st.write("問題:", st.session_state.current_problem)
@@ -768,7 +882,6 @@ if check_password():
             if st.button("新しい問題を生成"):
                 st.session_state.problem_generated = False
                 st.rerun()
-
 
     def optimal_problem_generation():
         st.subheader("学習者に応じた問題出題")
@@ -840,7 +953,6 @@ if check_password():
                 st.session_state.weak_problem_generated = False
                 st.rerun()
 
-
     def learning_evaluation():
         st.subheader("学習評価")
         
@@ -867,8 +979,6 @@ if check_password():
                     st.write(eval_content)
         else:
             st.write("まだ学習評価が実行されていません。")
-
-
 
 if __name__ == "__main__":
     main()
