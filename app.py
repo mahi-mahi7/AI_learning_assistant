@@ -175,7 +175,7 @@ if check_password():
         messages.append({"role": "user", "content": prompt})
 
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-3.5-turbo",
             messages=messages
         )
         return response.choices[0].message.content
@@ -488,6 +488,7 @@ if check_password():
         elif st.session_state.current_function == "学習評価":
             learning_evaluation()
 
+
     def teacher_view():
         st.subheader("教師用ダッシュボード")
         
@@ -497,9 +498,12 @@ if check_password():
             ["全体管理機能", "個別学習者管理機能"]
         )
         
+        # セッション状態の初期化
+        if 'show_all_students' not in st.session_state:
+            st.session_state.show_all_students = False
+        
         if view_type == "全体管理機能":
-            # 全体管理機能のコード
-            if st.button("全学習者の最新の学習状況を分析"):
+            if st.session_state.show_all_students:
                 st.subheader("学習者の学習状況一覧")
                 
                 # 学習者一覧を取得
@@ -537,17 +541,29 @@ if check_password():
                     
                     analysis = generate_response(analysis_prompt)
                     st.write(analysis)
-      
-            # 全体共通のインストラクション設定
-            st.subheader("全体共通のインストラクション設定")
-            st.session_state.global_instruction = st.text_area(
-                "全機能共通のインストラクションを設定", 
-                st.session_state.global_instruction, 
-                height=200
-            )
-            if st.button("全機能共通のインストラクションを更新"):
-                st.success("全機能共通のインストラクションが更新されました。")
-        
+                
+                # Topに戻るボタン
+                if st.button("Topへ戻る"):
+                    st.session_state.show_all_students = False
+                    st.rerun()
+            
+            else:
+                # 全体管理機能のコード
+                if st.button("全学習者の最新の学習状況を分析"):
+                    st.session_state.show_all_students = True
+                    st.rerun()
+                
+                # 全体共通のインストラクション設定
+                st.subheader("全体共通のインストラクション設定")
+                st.session_state.global_instruction = st.text_area(
+                    "全機能共通のインストラクションを設定", 
+                    st.session_state.global_instruction, 
+                    height=200
+                )
+                if st.button("全機能共通のインストラクションを更新"):
+                    st.success("全機能共通のインストラクションが更新されました。")
+
+
 
             # 全体共通のインストラクション設定
             st.subheader("全体共通のインストラクション設定")
