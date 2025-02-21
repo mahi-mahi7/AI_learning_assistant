@@ -175,7 +175,7 @@ if check_password():
         messages.append({"role": "user", "content": prompt})
 
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4",
             messages=messages
         )
         return response.choices[0].message.content
@@ -533,7 +533,7 @@ if check_password():
                     
                     # データ分析用のプロンプト作成と分析実行
                     analysis_prompt = f"""
-                    以下の学習者の最新の学習データを分析し、学習者ごとの学習の理解度を「◎」「〇」「△」の段階ごとに表したうえで、その判断の根拠となるような学習状況を30字程度で要約してください。形式は「学習理解度:～、具体的な学習状況:～」としてください。：
+                    以下の学習者の最新の学習データを分析し、学習者ごとの学習の理解度を「◎」（間違えやつまずきがほとんど見られず、学習内容を十分理解できていると判断できる）、「〇」（多少間違えやつまずきは見られるが、結果的に学習内容を理解することができていると判断できる）、「△」（間違えやつまずきが多数見られ、学習内容を理解できるとは判断しずらい）の3段階で表したうえで、その判断の根拠をとなるような具体的な学習状況を30字程度で要約してください。形式は「学習理解度:～、具体的な学習状況:～」としてください。：
                     
                     問題解決での活動: {json.dumps(problem_solving) if problem_solving else 'データなし'}
                     問題出題での活動: {json.dumps(problem_generation) if problem_generation else 'データなし'}
@@ -564,16 +564,16 @@ if check_password():
                 if st.button("全機能共通のインストラクションを更新"):
                     st.success("全機能共通のインストラクションが更新されました。")
 
-
         else:  # 個別学習者管理機能
             # ユーザー選択
             c.execute("SELECT username FROM users WHERE user_type='学習者'")
             users = [row[0] for row in c.fetchall()]
             selected_user = st.selectbox("ユーザーを選択", users)
 
-        # 機能選択（個別学習者管理機能の中に移動）
-        functions = ["問題解決", "問題出題", "学習者に応じた問題出題", "学習評価"]
-        selected_function = st.selectbox("機能を選択", functions)
+            # 機能選択（個別学習者管理機能の中に移動）
+            functions = ["問題解決", "問題出題", "学習者に応じた問題出題", "学習評価"]
+            selected_function = st.selectbox("機能を選択", functions)
+
 
         # selected_userを使用するコード
         if selected_function == "問題解決":
