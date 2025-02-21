@@ -541,7 +541,8 @@ if check_password():
                     
                     analysis = generate_response(analysis_prompt)
                     st.write(analysis)
-                
+
+
                 # Topに戻るボタン
                 if st.button("Topへ戻る"):
                     st.session_state.show_all_students = False
@@ -563,17 +564,6 @@ if check_password():
                 if st.button("全機能共通のインストラクションを更新"):
                     st.success("全機能共通のインストラクションが更新されました。")
 
-
-
-            # 全体共通のインストラクション設定
-            st.subheader("全体共通のインストラクション設定")
-            st.session_state.global_instruction = st.text_area(
-                "全機能共通のインストラクションを設定", 
-                st.session_state.global_instruction, 
-                height=200
-            )
-            if st.button("全機能共通のインストラクションを更新"):
-                st.success("全機能共通のインストラクションが更新されました。")
 
         else:  # 個別学習者管理機能
             # ユーザー選択
